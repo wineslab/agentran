@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+deploy/models/
+
+# Real overlay values (committed templates live as *.yaml.example).
+deploy/k8s/overlays/*/configmap-patch.yaml
+deploy/k8s/overlays/*/secret-patch.yaml

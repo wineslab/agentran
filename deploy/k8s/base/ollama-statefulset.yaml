@@ -1,0 +1,62 @@
+# Ollama serves the LLM behind an OpenAI-compatible API on :11434.
+# Models are cached in a PVC so they survive Pod restarts (matches the
+# `./models/ollama` bind mount in deploy/docker-compose.yml).
+#
+# GPU: the base requests one nvidia.com/gpu. On CPU-only clusters,
+# overlays should patch this out (see overlays/public-example).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ollama
+  labels:
+    app: ollama
+spec:
+  serviceName: ollama
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_KEEP_ALIVE
+              value: "-1"
+            # OpenShift runs containers as a random non-root UID whose
+            # HOME defaults to /. Point HOME at the mounted PVC so Ollama
+            # can create its SSH key and model cache.
+            - name: HOME
+              value: /data
+          readinessProbe:
+            exec:
+              command: ["ollama", "list"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /data
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1000m"
+              nvidia.com/gpu: "1"
+            limits:
+              memory: "32Gi"
+              cpu: "4000m"
+              nvidia.com/gpu: "1"
+  volumeClaimTemplates:
+    - metadata:
+        name: models
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi

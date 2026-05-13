@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agents-config
+data:
+  # InfluxDB defaults to the in-cluster service.
+  INFLUXDB_URL: "http://influxdb:8086"
+  INFLUXDB_ORG: "mwc"
+  INFLUXDB_BUCKET: "mwc-live"
+
+  # LLM: agents use the OpenAI-compatible API exposed by Ollama.
+  LLM_TYPE: "vllm"
+  VLLM_URL: "http://ollama:11434"
+  VLLM_MODEL: "gpt-oss:20b"
+  OLLAMA_MODEL: "gpt-oss:20b"
+
+  # Cross-agent hand-off: L2 Manager writes subintents.json here,
+  # Scheduler reads it. Mounted as an emptyDir shared between
+  # containers in the agents Pod.
+  SHARED_STATE_DIR: "/app/shared-state"
+
+  # Initial intent for the L2 Manager. Overlays typically patch this.
+  INTENT: "Alternate the throughput limit for all UE classes between 1 Mbps and 3 Mbps every decision cycle. When the current limit is 1 set it to 3. When it is 3 set it to 1."
+
+  # gNB control API — overlays must point this at a reachable OAI fork.
+  GNB_API_URL: "http://YOUR_GNB_API_URL:8000"
+
+  # Scheduler tunables (mirrors deploy/docker-compose.yml).
+  SCHED_MIN_LIMIT: "1"
+  SCHED_MAX_LIMIT: "20"
+  SCHED_DEFAULT_FWA_LIMIT: "3"
+  SCHED_DEFAULT_MTC_LIMIT: "3"
+  SCHED_DECISION_INTERVAL: "1.0"
+
+  PYTHONUNBUFFERED: "1"

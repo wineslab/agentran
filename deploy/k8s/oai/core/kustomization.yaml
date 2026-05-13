@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Generic OAI core network manifests. Apply via an overlay (see
+# ../overlays/) which sets the namespace and binds the SCC.
+#
+# Apply with:
+#   kubectl kustomize --load-restrictor=LoadRestrictionsNone \
+#     deploy/k8s/oai/overlays/<name> | oc apply -f -
+# (the --load-restrictor flag is needed because mini_nonrf_config.yaml
+# and oai_db.sql are read from deploy/oai-cn/ — single source of truth
+# with deploy/docker-compose.yml.)
+
+resources:
+  - oai-privileged-sa.yaml
+  - mysql-credentials-secret.yaml
+  - mysql-statefulset.yaml
+  - mysql-service.yaml
+  - amf-deployment.yaml
+  - amf-service.yaml
+  - smf-deployment.yaml
+  - smf-service.yaml
+  - upf-deployment.yaml
+  - upf-service.yaml
+
+configMapGenerator:
+  - name: oai-cn-config
+    files:
+      - mini_nonrf_config.yaml=../../../oai-cn/mini_nonrf_config.yaml
+  - name: mysql-healthcheck
+    files:
+      - mysql-healthcheck.sh=../../../oai-cn/mysql-healthcheck.sh
+
+# Note: mysql-init ConfigMap is NOT generated here because
+# deploy/oai-cn/oai_db.sql contains binary UE keys that kustomize
+# can't serialize as YAML strings. Create it ad-hoc with:
+#   oc create configmap mysql-init \
+#     --from-file=oai_db.sql=deploy/oai-cn/oai_db.sql \
+#     -n <namespace>
+# before applying these manifests.
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: multi-agent-commag-oai
+    includeSelectors: false

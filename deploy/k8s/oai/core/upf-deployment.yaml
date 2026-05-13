@@ -1,0 +1,60 @@
+# UPF runs the GTP data plane and needs kernel networking access.
+# ServiceAccount oai-privileged must be bound to the `privileged` SCC
+# in the target namespace:
+#
+#   oc adm policy add-scc-to-user privileged \
+#     -z oai-privileged -n <namespace>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oai-upf
+  labels:
+    app: oai-upf
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oai-upf
+  template:
+    metadata:
+      labels:
+        app: oai-upf
+    spec:
+      serviceAccountName: oai-privileged
+      # OAI images are amd64-only; pinning here lets the multiarch
+      # operator skip its image inspection (which gets Docker Hub
+      # rate-limited).
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: upf
+          image: oaisoftwarealliance/oai-upf:v2.1.10
+          env:
+            - name: TZ
+              value: Europe/Paris
+          ports:
+            - containerPort: 2152
+              protocol: UDP
+              name: gtp-u
+            - containerPort: 8805
+              protocol: UDP
+              name: pfcp
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN", "SYS_ADMIN"]
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /openair-upf/etc/config.yaml
+              subPath: mini_nonrf_config.yaml
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "pgrep oai_upf || pgrep -f openair-upf"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: oai-cn-config

@@ -1,0 +1,51 @@
+# SMF — same shape as AMF. The mini_nonrf_config.yaml has separate
+# sections for each NF; OAI binaries pick their own section.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oai-smf
+  labels:
+    app: oai-smf
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oai-smf
+  template:
+    metadata:
+      labels:
+        app: oai-smf
+    spec:
+      # OAI SMF writes /var/run/oai_smf00.pid at startup; on OpenShift
+      # the restricted SCC's random UID can't write to /var/run. Run
+      # as UID 0 via the privileged SA.
+      serviceAccountName: oai-privileged
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+      # OAI images are amd64-only; pinning here lets the multiarch
+      # operator skip its image inspection (which gets Docker Hub
+      # rate-limited).
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: smf
+          image: oaisoftwarealliance/oai-smf:v2.1.10
+          env:
+            - name: TZ
+              value: Europe/Paris
+          ports:
+            - containerPort: 8805
+              protocol: UDP
+              name: pfcp
+            - containerPort: 80
+              name: sbi
+          volumeMounts:
+            - name: config
+              mountPath: /openair-smf/etc/config.yaml
+              subPath: mini_nonrf_config.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: oai-cn-config

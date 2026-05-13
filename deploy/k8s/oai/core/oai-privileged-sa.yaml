@@ -1,0 +1,9 @@
+# Dedicated ServiceAccount for OAI Pods that need privileged SCC.
+# Bind in the target namespace with:
+#
+#   oc adm policy add-scc-to-user privileged \
+#     -z oai-privileged -n <namespace>
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oai-privileged

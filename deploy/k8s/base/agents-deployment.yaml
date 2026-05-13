@@ -1,0 +1,95 @@
+# L2 Manager and Scheduler run as two containers in a single Pod and
+# communicate through subintents.json on a shared emptyDir volume —
+# mirrors the deploy/docker-compose.yml services `l2-manager` and
+# `scheduler-agent` plus the `agent-shared-state` named volume.
+#
+# Both containers share `envFrom` (configmap + secret). The few env
+# vars used by only one of them are harmless when present in the other.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agents
+  labels:
+    app: agents
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: agents
+  template:
+    metadata:
+      labels:
+        app: agents
+    spec:
+      initContainers:
+        # Block until the Ollama model is loaded and reachable.
+        # ollama-init (Job) does the actual pull; this just gates the
+        # agents from spinning on LLM connection errors during cold start.
+        - name: wait-for-ollama
+          image: curlimages/curl:8.10.1
+          envFrom:
+            - configMapRef:
+                name: agents-config
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for $OLLAMA_MODEL on $VLLM_URL ..."
+              until curl -fs "$VLLM_URL/api/tags" | grep -q "\"$OLLAMA_MODEL\""; do
+                sleep 5
+              done
+              echo "Model ready"
+      containers:
+        - name: l2-manager
+          image: multi-agent-commag
+          imagePullPolicy: Always
+          command: ["python3", "run_l2.py"]
+          envFrom:
+            - configMapRef:
+                name: agents-config
+            - secretRef:
+                name: agents-secrets
+          volumeMounts:
+            - name: shared-state
+              mountPath: /app/shared-state
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "test -f /app/shared-state/subintents.json"
+            initialDelaySeconds: 30
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+
+        - name: scheduler-agent
+          image: multi-agent-commag
+          imagePullPolicy: Always
+          command: ["python3", "run_scheduler.py"]
+          envFrom:
+            - configMapRef:
+                name: agents-config
+            - secretRef:
+                name: agents-secrets
+          volumeMounts:
+            - name: shared-state
+              mountPath: /app/shared-state
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+
+      volumes:
+        - name: shared-state
+          emptyDir: {}

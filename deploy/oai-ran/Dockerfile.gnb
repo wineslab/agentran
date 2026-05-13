@@ -1,0 +1,228 @@
+# Self-contained multi-stage build for the agentRAN gNB.
+# Combines base, build, and runtime stages so that
+# `docker compose build oai-gnb` works without pre-steps.
+#
+# Build context: repository root (../)
+# Adds LuaJIT to the OAI base, then layers the Lua scheduler
+# and Python agent-bridge scripts into the final image.
+
+# ─── Stage 1: ran-base ────────────────────────────────────────────────
+FROM mirror.gcr.io/library/ubuntu:noble AS ran-base
+ARG NEEDED_GIT_PROXY
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Paris
+ENV BUILD_UHD_FROM_SOURCE=True
+ENV UHD_VERSION=4.8.0.0
+
+RUN apt-get update && \
+    apt-get upgrade --yes && \
+    apt-get install --yes \
+       build-essential \
+       ccache \
+       psmisc \
+       git \
+       xxd \
+       libpcre2-dev \
+       python3-dev \
+       bison \
+       flex \
+       m4 \
+       python3-pip \
+       wget \
+       flatbuffers-compiler \
+       libflatbuffers-dev \
+       libnanomsg-dev \
+       # LuaJIT for the Lua UL scheduler
+       libluajit-5.1-dev \
+       luajit && \
+    pip3 install --ignore-installed pyyaml --break-system-packages
+
+# Tini init
+ENV TINI_VERSION=v0.19.0
+RUN wget https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-${TARGETARCH} -O /tini && chmod +x /tini
+
+# yq for YAML config processing
+ENV YQ_VERSION=v4.2.0
+RUN wget https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH} -O /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq
+
+RUN /bin/bash -c "if [[ -v NEEDED_GIT_PROXY ]]; then git config --global http.proxy $NEEDED_GIT_PROXY; fi"
+
+WORKDIR /oai-ran/cmake_targets/tools
+COPY oai/cmake_targets/tools/build_helper \
+     oai/cmake_targets/tools/uhd-4.x-tdd-patch.diff \
+     ./
+
+WORKDIR /oai-ran/cmake_targets
+COPY oai/cmake_targets/build_oai .
+
+WORKDIR /oai-ran
+COPY oai/oaienv .
+
+RUN /bin/sh oaienv && \
+    cd cmake_targets && \
+    mkdir -p log && \
+    ./build_oai -I -w USRP --install-optional-packages
+
+
+# ─── Stage 2: ran-build ───────────────────────────────────────────────
+FROM ran-base AS ran-build
+ARG BUILD_OPTION
+ARG E2AP_VERSION=E2AP_V3
+ARG KPM_VERSION=KPM_V3_00
+
+RUN rm -Rf /oai-ran
+WORKDIR /oai-ran
+COPY oai/ .
+
+RUN \
+    --mount=type=cache,target=/root/.cache/ccache/ \
+    --mount=type=cache,target=/root/.cache/cpm/ \
+    /bin/sh oaienv && \
+    cd cmake_targets && \
+    mkdir -p log && \
+    ./build_oai -c --ninja \
+      --eNB --gNB --RU --UE --nrUE \
+      --build-lib "telnetsrv enbscope uescope nrscope" \
+      -w USRP -t Ethernet \
+      --build-e2 --cmake-opt -DKPM_VERSION=$KPM_VERSION --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
+      --cmake-opt -DOAI_VRTSIM_TAPS_CLIENT=ON \
+      --noavx512 \
+      --build-tool-opt -k10 \
+      $BUILD_OPTION && \
+    echo "---- ldd on executables ----" && \
+    ldd ran_build/build/*softmodem* ran_build/build/nr-cuup ran_build/build/oairu && \
+    echo "---- ldd on shared libraries ----" && \
+    ldd ran_build/build/*.so
+
+RUN \
+    --mount=type=cache,target=/root/.cache/ccache/ \
+    mkdir -p openair2/E2AP/flexric/build && \
+    cd openair2/E2AP/flexric/build && \
+    cmake -GNinja -DCMAKE_BUILD_TYPE=Release \
+          -DKPM_VERSION=$KPM_VERSION \
+          -DE2AP_VERSION=$E2AP_VERSION .. && \
+    ninja && \
+    ninja install
+
+
+# ─── Stage 3: runtime ─────────────────────────────────────────────────
+FROM mirror.gcr.io/library/ubuntu:noble AS oai-gnb
+ARG BUILD_OPTION
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Paris
+
+RUN apt-get update && \
+    apt-get upgrade --yes && \
+    apt-get install --yes \
+        software-properties-common \
+        procps \
+        libsctp1 \
+        libboost-chrono1.83.0 \
+        libboost-date-time1.83.0 \
+        libboost-filesystem1.83.0 \
+        libboost-regex1.83.0 \
+        libboost-serialization1.83.0 \
+        libboost-thread1.83.0 \
+        libboost-system1.83.0 \
+        libboost-program-options1.83.0 \
+        tzdata \
+        libblas3 \
+        libconfig9 \
+        openssl \
+        net-tools \
+        iperf \
+        iperf3 \
+        iproute2 \
+        iputils-ping \
+        gdb \
+        python3 \
+        python3-six \
+        python3-requests \
+        python3-pip \
+        libusb-1.0-0 \
+        libyaml-cpp-dev \
+        libnanomsg5 \
+        # LuaJIT runtime + luasocket for the Lua UL scheduler
+        libluajit-5.1-2 \
+        luajit \
+        lua-socket \
+        # telnet client for UL_control_termination.py (pexpect)
+        telnet && \
+    /bin/bash -c 'if [[ "$BUILD_OPTION" = "--sanitize" ]]; then DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+        libasan8 \
+        libubsan1 \
+        liblapacke; fi' && \
+    apt-get clean -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Python dependencies for agent bridge scripts
+RUN pip3 install --break-system-packages --no-cache-dir \
+    fastapi uvicorn pexpect aiohttp requests influxdb-client
+
+# OAI binaries
+WORKDIR /opt/oai-gnb/bin
+COPY --from=ran-build \
+    /oai-ran/cmake_targets/ran_build/build/nr-softmodem ./
+
+# Shared libraries
+COPY --from=ran-build \
+    /oai-ran/cmake_targets/ran_build/build/liboai_eth_transpro.so \
+    /oai-ran/cmake_targets/ran_build/build/librfsimulator.so \
+    /oai-ran/cmake_targets/ran_build/build/liboai_usrpdevif.so \
+    /oai-ran/cmake_targets/ran_build/build/libcoding.so \
+    /oai-ran/cmake_targets/ran_build/build/libparams_libconfig.so \
+    /oai-ran/cmake_targets/ran_build/build/libdfts.so \
+    /oai-ran/cmake_targets/ran_build/build/libldpc*.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_ci.so \
+    /oai-ran/cmake_targets/ran_build/build/libparams_yaml.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_bearer.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_5Gue.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_rrc.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_o1.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_ul.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_dl.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_prbmask.so \
+    /oai-ran/cmake_targets/ran_build/build/libvrtsim.so \
+    /usr/local/lib/
+
+# UHD
+COPY --from=ran-base /usr/local/bin/uhd_find_devices /usr/local/bin
+COPY --from=ran-base /usr/local/lib/libuhd.so.4.8.0 /usr/local/lib
+COPY --from=ran-base /usr/local/lib/uhd/utils/uhd_images_downloader.py /opt/oai-gnb/bin
+# FlexRIC SM models
+COPY --from=ran-build /usr/local/lib/flexric /usr/local/lib/flexric
+
+RUN /bin/bash -c "ln -s /usr/local/lib/liboai_usrpdevif.so /usr/local/lib/liboai_device.so" && \
+    ldconfig
+
+# Lua schedulers
+WORKDIR /opt/oai-gnb/scripts
+COPY oai/pf_ul_pipe_logger.lua ./
+COPY oai/pf_ul_pinned_logger.lua ./
+COPY oai/pf_dl_pipe_logger.lua ./
+COPY oai/pf_dl_simple.lua ./
+
+# Python agent-bridge scripts
+COPY oai/ul_metrics_forwarder.py ./
+COPY oai/dl_metrics_forwarder.py ./
+COPY oai/UL_control_termination.py ./
+COPY oai/telnet_utils.py ./
+
+# Custom entrypoint
+COPY deploy/oai-ran/entrypoint-gnb.sh /opt/oai-gnb/bin/entrypoint.sh
+RUN chmod +x /opt/oai-gnb/bin/entrypoint.sh
+
+# yq + tini from base
+COPY --from=ran-base /usr/local/bin/yq /usr/local/bin/yq
+COPY --from=ran-base /tini /tini
+
+WORKDIR /opt/oai-gnb
+
+ENV LUA_SCHED_UL=/opt/oai-gnb/scripts/pf_ul_pipe_logger.lua
+ENV LUA_SCHED=/opt/oai-gnb/scripts/pf_dl_pipe_logger.lua
+
+ENTRYPOINT ["/tini", "-v", "--", "/opt/oai-gnb/bin/entrypoint.sh"]
+CMD ["/opt/oai-gnb/bin/nr-softmodem"]

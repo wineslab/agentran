@@ -1,0 +1,169 @@
+# Self-contained multi-stage build for OAI nrUE.
+# Built from the same fork as the gNB for protocol compatibility.
+#
+# Build context: repository root (../)
+
+# ─── Stage 1: ran-base ────────────────────────────────────────────────
+FROM mirror.gcr.io/library/ubuntu:noble AS ran-base
+ARG NEEDED_GIT_PROXY
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Paris
+ENV BUILD_UHD_FROM_SOURCE=True
+ENV UHD_VERSION=4.8.0.0
+
+RUN apt-get update && \
+    apt-get upgrade --yes && \
+    apt-get install --yes \
+       build-essential \
+       ccache \
+       psmisc \
+       git \
+       xxd \
+       libpcre2-dev \
+       python3-dev \
+       bison \
+       flex \
+       m4 \
+       python3-pip \
+       wget \
+       flatbuffers-compiler \
+       libflatbuffers-dev \
+       libnanomsg-dev \
+       libluajit-5.1-dev \
+       luajit && \
+    pip3 install --ignore-installed pyyaml --break-system-packages
+
+ENV TINI_VERSION=v0.19.0
+RUN wget https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-${TARGETARCH} -O /tini && chmod +x /tini
+
+ENV YQ_VERSION=v4.2.0
+RUN wget https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH} -O /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq
+
+RUN /bin/bash -c "if [[ -v NEEDED_GIT_PROXY ]]; then git config --global http.proxy $NEEDED_GIT_PROXY; fi"
+
+WORKDIR /oai-ran/cmake_targets/tools
+COPY oai/cmake_targets/tools/build_helper \
+     oai/cmake_targets/tools/uhd-4.x-tdd-patch.diff \
+     ./
+
+WORKDIR /oai-ran/cmake_targets
+COPY oai/cmake_targets/build_oai .
+
+WORKDIR /oai-ran
+COPY oai/oaienv .
+
+RUN /bin/sh oaienv && \
+    cd cmake_targets && \
+    mkdir -p log && \
+    ./build_oai -I -w USRP --install-optional-packages
+
+
+# ─── Stage 2: ran-build ───────────────────────────────────────────────
+FROM ran-base AS ran-build
+ARG BUILD_OPTION
+
+RUN rm -Rf /oai-ran
+WORKDIR /oai-ran
+COPY oai/ .
+
+RUN \
+    --mount=type=cache,target=/root/.cache/ccache/ \
+    --mount=type=cache,target=/root/.cache/cpm/ \
+    /bin/sh oaienv && \
+    cd cmake_targets && \
+    mkdir -p log && \
+    ./build_oai -c --ninja \
+      --eNB --gNB --RU --UE --nrUE \
+      --build-lib "telnetsrv enbscope uescope nrscope" \
+      -w USRP -t Ethernet \
+      --noavx512 \
+      --build-tool-opt -k10 \
+      $BUILD_OPTION && \
+    echo "---- ldd on executables ----" && \
+    ldd ran_build/build/*softmodem* && \
+    echo "---- ldd on shared libraries ----" && \
+    ldd ran_build/build/*.so
+
+
+# ─── Stage 3: runtime ─────────────────────────────────────────────────
+FROM ubuntu:noble AS oai-nr-ue
+ARG BUILD_OPTION
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Paris
+
+RUN apt-get update && \
+    apt-get upgrade --yes && \
+    apt-get install --yes \
+        arping \
+        software-properties-common \
+        procps \
+        libsctp1 \
+        libboost-chrono1.83.0 \
+        libboost-date-time1.83.0 \
+        libboost-filesystem1.83.0 \
+        libboost-regex1.83.0 \
+        libboost-serialization1.83.0 \
+        libboost-thread1.83.0 \
+        libboost-system1.83.0 \
+        libboost-program-options1.83.0 \
+        tzdata \
+        liblapacke \
+        libblas3 \
+        libconfig9 \
+        openssl \
+        net-tools \
+        gdb \
+        python3 \
+        python3-six \
+        python3-requests \
+        libusb-1.0-0 \
+        iputils-ping \
+        iproute2 \
+        iperf3 \
+        iperf \
+        libyaml-cpp-dev \
+        libnanomsg5 && \
+    /bin/bash -c 'if [[ "$BUILD_OPTION" = "--sanitize" ]]; then DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+        libasan8 \
+        libubsan1; fi' && \
+    apt-get clean -y && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/oai-nr-ue/bin
+COPY --from=ran-build \
+    /oai-ran/cmake_targets/ran_build/build/nr-uesoftmodem ./
+
+COPY oai/docker/scripts/nr_ue_entrypoint.sh ./entrypoint.sh
+
+WORKDIR /opt/oai-nr-ue/etc
+
+COPY --from=ran-build \
+    /oai-ran/cmake_targets/ran_build/build/liboai_eth_transpro.so \
+    /oai-ran/cmake_targets/ran_build/build/librfsimulator.so \
+    /oai-ran/cmake_targets/ran_build/build/liboai_usrpdevif.so \
+    /oai-ran/cmake_targets/ran_build/build/libcoding.so \
+    /oai-ran/cmake_targets/ran_build/build/libparams_libconfig.so \
+    /oai-ran/cmake_targets/ran_build/build/libdfts.so \
+    /oai-ran/cmake_targets/ran_build/build/libldpc*.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_ciUE.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_5Gue.so \
+    /oai-ran/cmake_targets/ran_build/build/libparams_yaml.so \
+    /oai-ran/cmake_targets/ran_build/build/libvrtsim.so \
+    /usr/local/lib/
+
+COPY --from=ran-base /usr/local/bin/uhd_find_devices /usr/local/bin
+COPY --from=ran-base /usr/local/lib/libuhd.so.4.8.0 /usr/local/lib
+COPY --from=ran-base /usr/local/lib/uhd/utils/uhd_images_downloader.py /opt/oai-nr-ue/bin
+
+RUN /bin/bash -c "ln -s /usr/local/lib/liboai_usrpdevif.so /usr/local/lib/liboai_device.so" && \
+    ldconfig
+
+WORKDIR /opt/oai-nr-ue
+
+COPY --from=ran-base /usr/local/bin/yq /usr/local/bin/yq
+COPY --from=ran-base /tini /tini
+CMD ["/opt/oai-nr-ue/bin/nr-uesoftmodem"]
+ENTRYPOINT ["/tini", "-v", "--", "/opt/oai-nr-ue/bin/entrypoint.sh"]

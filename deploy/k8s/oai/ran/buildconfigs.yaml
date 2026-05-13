@@ -1,0 +1,80 @@
+# Binary BuildConfigs for the three RAN images. Apply once, then run:
+#
+#   oc start-build oai-gnb   --from-dir=.
+#   oc start-build oai-nrue  --from-dir=.
+#   oc start-build dl-traffic --from-dir=.
+#
+# (--from-dir uploads the repo root as build context. Each
+# BuildConfig points at its Dockerfile via dockerfilePath.)
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: oai-gnb
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: oai-gnb
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: oai-gnb:latest
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: deploy/oai-ran/Dockerfile.gnb
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: oai-nrue
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: oai-nrue
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: oai-nrue:latest
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: deploy/oai-ran/Dockerfile.nrue
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: dl-traffic
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: dl-traffic
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: dl-traffic:latest
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: deploy/Dockerfile.traffic

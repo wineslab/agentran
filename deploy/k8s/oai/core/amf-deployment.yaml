@@ -1,0 +1,50 @@
+# AMF — no extra capabilities needed. Reads the shared OAI CN config
+# from the oai-cn-config ConfigMap (generated from
+# deploy/oai-cn/mini_nonrf_config.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oai-amf
+  labels:
+    app: oai-amf
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oai-amf
+  template:
+    metadata:
+      labels:
+        app: oai-amf
+    spec:
+      # OAI AMF writes /var/run/oai_amf00.pid; needs UID 0 to do so.
+      serviceAccountName: oai-privileged
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+      # OAI images are amd64-only; pinning here lets the multiarch
+      # operator skip its image inspection (which gets Docker Hub
+      # rate-limited).
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: amf
+          image: oaisoftwarealliance/oai-amf:v2.1.10
+          env:
+            - name: TZ
+              value: Europe/Paris
+          ports:
+            - containerPort: 38412
+              protocol: SCTP
+              name: ngap
+            - containerPort: 80
+              name: sbi
+          volumeMounts:
+            - name: config
+              mountPath: /openair-amf/etc/config.yaml
+              subPath: mini_nonrf_config.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: oai-cn-config

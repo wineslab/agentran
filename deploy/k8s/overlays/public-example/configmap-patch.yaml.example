@@ -1,0 +1,10 @@
+# Copy to configmap-patch.yaml (gitignored) and fill with real values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agents-config
+data:
+  GNB_API_URL: "http://gnb-host.example.com:8000"
+  OLLAMA_MODEL: "gpt-oss:20b"
+  VLLM_MODEL: "gpt-oss:20b"
+  INTENT: "Maximize throughput"

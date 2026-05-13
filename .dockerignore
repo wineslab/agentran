@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# LLM models
+deploy/models/
+
+# Data and logs
+logs/
+logs-*/
+logs_*/
+*.log
+data/
+dataset_dumps/
+LTM_demo/
+
+# Experiments and plots
+plotting/cache/
+plotting/*.png
+plotting/*.tex
+plotting/*.pt
+*.png
+*.jpg
+*.tex
+*.pt
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env

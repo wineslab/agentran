@@ -1,0 +1,4 @@
+[submodule "oai"]
+	path = oai
+	url = https://github.com/wineslab/oai-release-agentRAN.git
+	branch = dl-lua-scheduler

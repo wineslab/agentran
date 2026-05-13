@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-ran-agents
+  labels:
+    app: ai-ran-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-ran-agents
+  template:
+    metadata:
+      labels:
+        app: ai-ran-agents
+    spec:
+      containers:
+      - name: ai-ran-agents
+        image: image-registry.openshift-image-registry.svc:5000/deployment-pipeline/agentran:ai-ran
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        # Since Dockerfile CMD is "sleep infinity", override to run the application
+        command: ["python3", "main.py"]

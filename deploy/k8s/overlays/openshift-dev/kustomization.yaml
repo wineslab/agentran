@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Used to test on a dedicated OpenShift namespace before public release.
+# Cluster-specific: the dev namespace's default storage class has an
+# unresponsive provisioner, so the InfluxDB and Ollama PVCs are pinned
+# to `nfs-client`.
+
+namespace: multi-agent-commag-dev
+
+resources:
+  - ../../base
+
+patches:
+  - path: configmap-patch.yaml
+  - path: secret-patch.yaml
+  - path: influxdb-storageclass-patch.yaml
+  - path: ollama-storageclass-patch.yaml
+
+images:
+  - name: multi-agent-commag
+    newName: image-registry.openshift-image-registry.svc:5000/multi-agent-commag-dev/multi-agent-commag
+    newTag: latest

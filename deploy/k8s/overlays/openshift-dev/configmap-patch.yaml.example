@@ -1,0 +1,10 @@
+# Copy to configmap-patch.yaml (gitignored) and fill with real values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agents-config
+data:
+  GNB_API_URL: "http://gnb.example.com:8000"
+  OLLAMA_MODEL: "gpt-oss:20b"
+  VLLM_MODEL: "gpt-oss:20b"
+  INTENT: "Alternate the throughput limit for all UE classes between 1 Mbps and 3 Mbps every decision cycle. When the current limit is 1 set it to 3. When it is 3 set it to 1."

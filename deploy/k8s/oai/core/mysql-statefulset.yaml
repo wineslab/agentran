@@ -1,0 +1,75 @@
+# Init SQL and healthcheck come from deploy/oai-cn/ via the kustomize
+# configMapGenerator — single source of truth with deploy/docker-compose.yml.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          env:
+            - name: TZ
+              value: Europe/Paris
+            - name: MYSQL_DATABASE
+              value: oai_db
+            - name: MYSQL_USER
+              value: test
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-credentials
+                  key: MYSQL_PASSWORD
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-credentials
+                  key: MYSQL_ROOT_PASSWORD
+          ports:
+            - containerPort: 3306
+              name: mysql
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: healthcheck
+              mountPath: /tmp/mysql-healthcheck.sh
+              subPath: mysql-healthcheck.sh
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["/bin/bash", "/tmp/mysql-healthcheck.sh"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+      volumes:
+        - name: init-sql
+          configMap:
+            name: mysql-init
+        - name: healthcheck
+          configMap:
+            name: mysql-healthcheck
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

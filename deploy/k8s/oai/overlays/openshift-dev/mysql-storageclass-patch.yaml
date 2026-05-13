@@ -1,0 +1,16 @@
+# Pin mysql PVC to nfs-client. The cluster-default `nfs` class has
+# an unresponsive provisioner in dev namespaces here.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: nfs-client
+        resources:
+          requests:
+            storage: 5Gi

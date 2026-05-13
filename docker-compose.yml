@@ -1,0 +1,12 @@
+services:
+  agents:
+    build: .
+    # Configure your LLM backends and endpoints in shared/config.py before building.
+    # Key values to set:
+    #   INFLUX_CONFIG.url / token / org / bucket
+    #   YOUR_GNB_API_URL   (UL_control_termination.py REST API, default port 8000)
+    #   YOUR_OLLAMA_URL    (if using Qwen via Ollama)
+    #   YOUR_VLLM_URL      (if using a fine-tuned model via vLLM)
+    #   YOUR_CLAUDE_PROXY_URL (if using Claude via an OpenAI-compatible proxy)
+    command: python3 main.py --intent "Maximize throughput"
+    restart: unless-stopped

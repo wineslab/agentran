@@ -1,0 +1,129 @@
+# nrUE + dl-traffic in one Pod (mirrors compose's
+# `network_mode: service:oai-nr-ue`). Containers in a Pod share a
+# network namespace, so dl-traffic sees `oaitun_ue1` as soon as the
+# nrUE creates it.
+#
+# /dev/net/tun via the KubeVirt device plugin
+# (devices.kubevirt.io/tun) — works on any node where it's installed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oai-nrue
+  labels:
+    app: oai-nrue
+  annotations:
+    # OpenShift ImageStream triggers — rewrite the bare image names
+    # for both the nrue and dl-traffic containers to their
+    # internal-registry paths each time the ImageStream tag updates.
+    image.openshift.io/triggers: |
+      [
+        {"from":{"kind":"ImageStreamTag","name":"oai-nrue:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"nrue\")].image"},
+        {"from":{"kind":"ImageStreamTag","name":"dl-traffic:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"dl-traffic\")].image"}
+      ]
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: oai-nrue
+  template:
+    metadata:
+      labels:
+        app: oai-nrue
+    spec:
+      serviceAccountName: oai-privileged
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+        # Resolve oai-gnb's Service IP for --rfsimulator.[0].serveraddr.
+        - name: gnb-resolver
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for oai-gnb DNS..."
+              for i in $(seq 1 60); do
+                GNB_IP=$(getent hosts oai-gnb | awk '{print $1}')
+                if [ -n "$GNB_IP" ]; then break; fi
+                sleep 2
+              done
+              if [ -z "$GNB_IP" ]; then
+                echo "oai-gnb did not resolve"; exit 1
+              fi
+              echo "GNB_IP=$GNB_IP" > /shared/env
+              cat /shared/env
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+      containers:
+        - name: nrue
+          image: oai-nrue:latest
+          imagePullPolicy: Always
+          # Templating gNB IP into USE_ADDITIONAL_OPTIONS at startup,
+          # then chaining the image's normal entrypoint so the OAI
+          # bootstrapping (tini, config sanity checks) still runs.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              . /shared/env
+              export USE_ADDITIONAL_OPTIONS="-E --rfsim -r 106 --numerology 1 --uicc0.imsi 208990100001100 -C 3319680000 --rfsimulator.[0].serveraddr $GNB_IP --log_config.global_log_options level,nocolor,time"
+              echo "USE_ADDITIONAL_OPTIONS=$USE_ADDITIONAL_OPTIONS"
+              exec /tini -v -- /opt/oai-nr-ue/bin/entrypoint.sh \
+                /opt/oai-nr-ue/bin/nr-uesoftmodem
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW", "SYS_NICE"]
+              drop: ["ALL"]
+          resources:
+            requests:
+              devices.kubevirt.io/tun: "1"
+            limits:
+              devices.kubevirt.io/tun: "1"
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+              readOnly: true
+            - name: config
+              mountPath: /opt/oai-nr-ue/etc/nr-ue.yaml
+              subPath: nrue.yaml
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "pgrep nr-uesoftmodem"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+        - name: dl-traffic
+          image: dl-traffic:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              echo "[dl-traffic] Waiting for UE tunnel interface..."
+              while ! ip link show oaitun_ue1 2>/dev/null; do sleep 2; done
+              UE_IP=$(ip -4 addr show oaitun_ue1 | grep -oP 'inet \K[0-9.]+')
+              echo "[dl-traffic] UE tunnel IP: $UE_IP"
+              # Policy routing so return traffic uses the tunnel.
+              ip rule add from "$UE_IP" table 201 || true
+              ip route add default dev oaitun_ue1 table 201 || true
+              # ext-dn not yet ported to k8s — when added, the iperf3
+              # client targets its IP and -R makes ext-dn the sender
+              # (downlink). Until then, set up the tunnel and idle.
+              echo "[dl-traffic] ext-dn not deployed, idling. (When added: iperf3 -c <ext-dn> -B $UE_IP -u -b 10M -t 0 -R --forceflush)"
+              sleep infinity
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+              drop: ["ALL"]
+      volumes:
+        - name: shared
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: oai-nrue-config

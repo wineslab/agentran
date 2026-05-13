@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Reference overlay for an OpenShift dev namespace. Co-deploy with the
+# agent side (deploy/k8s/overlays/openshift-dev/) by pointing both at
+# the same namespace.
+
+namespace: multi-agent-commag-dev
+
+resources:
+  - ../../core
+
+patches:
+  - path: mysql-storageclass-patch.yaml

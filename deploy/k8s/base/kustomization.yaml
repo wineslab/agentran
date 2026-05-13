@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Generic, vendor-neutral manifests for the agent side of multi-agent-commag.
+# Pick or write an overlay (see ../overlays/) before applying — base on
+# its own has no namespace, no real secrets, and placeholder image refs.
+#
+# Mirrors the agent-side services in deploy/docker-compose.yml
+# (influxdb, ollama, ollama-init, l2-manager, scheduler-agent). The
+# OAI core/RAN side is out of scope for k8s — point GNB_API_URL at a
+# reachable OAI gNB via an overlay.
+
+resources:
+  - agents-configmap.yaml
+  - agents-secret.yaml
+  - agents-deployment.yaml
+  - influxdb-bootstrap-secret.yaml
+  - influxdb-statefulset.yaml
+  - influxdb-service.yaml
+  - ollama-statefulset.yaml
+  - ollama-service.yaml
+  - ollama-init-job.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: multi-agent-commag
+    includeSelectors: false
+
+# Image is intentionally a bare name. Overlays must set a real registry
+# path via their own `images:` directive (see overlays/*/kustomization.yaml).

@@ -1,0 +1,133 @@
+# OAI gNB built from the agentRAN fork (this repo's oai/ submodule)
+# via deploy/oai-ran/Dockerfile.gnb. The BuildConfig is provisioned
+# out-of-band; see deploy/k8s/oai/ran/README.md.
+#
+# An initContainer templates the gNB config at startup, substituting
+# the AMF's Service ClusterIP and the Pod's own IP for the literal
+# 10.71.0.x addresses in deploy/oai-ran/gnb.yaml — that file stays
+# the single source of truth shared with docker-compose.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oai-gnb
+  labels:
+    app: oai-gnb
+  annotations:
+    # OpenShift ImageStream trigger — rewrites the bare image name
+    # `oai-gnb:latest` to the namespace's internal-registry path each
+    # time the ImageStream tag is updated (i.e. on each new build).
+    image.openshift.io/triggers: |
+      [{"from":{"kind":"ImageStreamTag","name":"oai-gnb:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"gnb\")].image"}]
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: oai-gnb
+  template:
+    metadata:
+      labels:
+        app: oai-gnb
+    spec:
+      serviceAccountName: oai-privileged
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+        # Resolve the AMF Service IP via DNS and substitute the
+        # compose-era static IPs in gnb.yaml.
+        - name: config-template
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              microdnf install -y bind-utils >/dev/null 2>&1 || \
+                (yum install -y bind-utils >/dev/null 2>&1 || true)
+              echo "Resolving oai-amf..."
+              AMF_IP=$(getent hosts oai-amf | awk '{print $1}')
+              if [ -z "$AMF_IP" ]; then
+                AMF_IP=$(grep -A1 "name: oai-amf" /etc/hosts | tail -1 | awk '{print $1}')
+              fi
+              [ -z "$AMF_IP" ] && AMF_IP="oai-amf"  # fall back to DNS
+              echo "AMF_IP=$AMF_IP  POD_IP=$POD_IP"
+              sed -e "s/10.71.0.132/$AMF_IP/g" \
+                  -e "s/10.71.0.140/$POD_IP/g" \
+                  /src/gnb.yaml > /etc/oai/gnb.yaml
+              echo "--- rendered gnb.yaml ---"
+              cat /etc/oai/gnb.yaml
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          volumeMounts:
+            - name: config-src
+              mountPath: /src
+            - name: config-rendered
+              mountPath: /etc/oai
+      containers:
+        - name: gnb
+          image: oai-gnb:latest
+          imagePullPolicy: Always
+          env:
+            - name: USE_ADDITIONAL_OPTIONS
+              value: "-E --rfsim --telnetsrv --log_config.global_log_options level,nocolor,time"
+            - name: LUA_SCHED_UL
+              value: /opt/oai-gnb/scripts/pf_ul_pipe_logger.lua
+            - name: LUA_SCHED
+              value: /opt/oai-gnb/scripts/pf_dl_pipe_logger.lua
+            - name: ASAN_OPTIONS
+              value: detect_leaks=0
+            # InfluxDB connection for the metrics forwarder
+            - name: INFLUXDB_URL
+              value: http://influxdb:8086
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agents-secrets
+                  key: INFLUXDB_TOKEN
+            - name: INFLUXDB_ORG
+              valueFrom:
+                configMapKeyRef:
+                  name: agents-config
+                  key: INFLUXDB_ORG
+            - name: INFLUXDB_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: agents-config
+                  key: INFLUXDB_BUCKET
+          ports:
+            - containerPort: 2152
+              protocol: UDP
+              name: gtp-u
+            - containerPort: 38412
+              protocol: SCTP
+              name: ngap
+            - containerPort: 4043
+              name: rfsim
+            - containerPort: 8000
+              name: ul-control
+          securityContext:
+            capabilities:
+              add: ["SYS_NICE"]
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config-rendered
+              mountPath: /opt/oai-gnb/etc
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "pgrep nr-softmodem"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: config-src
+          configMap:
+            name: oai-gnb-config
+        - name: config-rendered
+          emptyDir: {}

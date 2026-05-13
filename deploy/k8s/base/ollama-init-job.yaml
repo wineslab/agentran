@@ -1,0 +1,39 @@
+# One-shot pull + warm-up of the model into Ollama, mirroring the
+# `ollama-init` service in deploy/docker-compose.yml. Re-apply (or use
+# kustomize's nameSuffix) when the model tag changes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-init
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: ollama-init
+          image: ollama/ollama
+          env:
+            - name: OLLAMA_HOST
+              value: "http://ollama:11434"
+            - name: OLLAMA_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: agents-config
+                  key: OLLAMA_MODEL
+            # See ollama-statefulset.yaml — HOME=/ on OpenShift breaks
+            # the ollama CLI's local cache directory creation.
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "[init] Waiting for Ollama at $OLLAMA_HOST..."
+              until ollama list >/dev/null 2>&1; do sleep 2; done
+              echo "[init] Pulling $OLLAMA_MODEL..."
+              ollama pull "$OLLAMA_MODEL"
+              echo "[init] Warming up model (loading into GPU)..."
+              ollama run "$OLLAMA_MODEL" "hello" --verbose
+              echo "[init] Model ready"

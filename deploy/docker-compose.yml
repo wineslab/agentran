@@ -1,0 +1,394 @@
+# Multi-Agent CommAG — full self-contained stack
+#
+# Brings up a complete 5G SA network (OAI CN + gNB + UE via RFsim),
+# InfluxDB for metrics, vLLM for LLM inference, and the AI-RAN agents.
+#
+# Quick start:
+#   cp .env.example .env   # edit if needed
+#   docker compose build
+#   docker compose up
+
+services:
+
+  # ─── OAI Core Network ──────────────────────────────────────────────
+
+  mysql:
+    container_name: agentran-mysql
+    image: mysql:8.0
+    init: true
+    volumes:
+      - ./oai-cn/oai_db.sql:/docker-entrypoint-initdb.d/oai_db.sql
+      - ./oai-cn/mysql-healthcheck.sh:/tmp/mysql-healthcheck.sh
+    environment:
+      - TZ=Europe/Paris
+      - MYSQL_DATABASE=oai_db
+      - MYSQL_USER=test
+      - MYSQL_PASSWORD=test
+      - MYSQL_ROOT_PASSWORD=linux
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: /bin/bash -c "/tmp/mysql-healthcheck.sh"
+      start_period: 10s
+      start_interval: 500ms
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.131
+
+  oai-amf:
+    container_name: agentran-oai-amf
+    image: oaisoftwarealliance/oai-amf:v2.1.10
+    environment:
+      - TZ=Europe/Paris
+    volumes:
+      - ./oai-cn/mini_nonrf_config.yaml:/openair-amf/etc/config.yaml
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.132
+
+  oai-smf:
+    container_name: agentran-oai-smf
+    image: oaisoftwarealliance/oai-smf:v2.1.10
+    environment:
+      - TZ=Europe/Paris
+    volumes:
+      - ./oai-cn/mini_nonrf_config.yaml:/openair-smf/etc/config.yaml
+    depends_on:
+      - oai-amf
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.133
+
+  oai-upf:
+    container_name: agentran-oai-upf
+    image: oaisoftwarealliance/oai-upf:v2.1.10
+    init: true
+    environment:
+      - TZ=Europe/Paris
+    volumes:
+      - ./oai-cn/mini_nonrf_config.yaml:/openair-upf/etc/config.yaml
+    depends_on:
+      - oai-smf
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    cap_drop:
+      - ALL
+    privileged: true
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.134
+    healthcheck:
+      test: /bin/bash -c "pgrep oai_upf || pgrep -f openair-upf"
+      start_period: 5s
+      start_interval: 500ms
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  oai-ext-dn:
+    container_name: agentran-oai-ext-dn
+    build:
+      context: .
+      dockerfile: Dockerfile.ext-dn
+    init: true
+    privileged: true
+    entrypoint: ["/bin/bash", "-c", "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE && ip route add 12.1.1.0/24 via 10.71.0.134 dev eth0 && iperf3 -s -D && sleep infinity"]
+    depends_on:
+      oai-upf:
+        condition: service_healthy
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.135
+    healthcheck:
+      test: /bin/bash -c "ping -c 2 10.71.0.134"
+      start_period: 10s
+      start_interval: 500ms
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── OAI RAN (RFsim) ──────────────────────────────────────────────
+
+  oai-gnb:
+    container_name: agentran-oai-gnb
+    build:
+      context: ..
+      dockerfile: deploy/oai-ran/Dockerfile.gnb
+    cap_add:
+      - SYS_NICE
+    cap_drop:
+      - ALL
+    environment:
+      USE_ADDITIONAL_OPTIONS: -E --rfsim --telnetsrv --log_config.global_log_options level,nocolor,time
+      LUA_SCHED_UL: /opt/oai-gnb/scripts/pf_ul_pipe_logger.lua
+      LUA_SCHED: /opt/oai-gnb/scripts/pf_dl_pipe_logger.lua
+      ASAN_OPTIONS: detect_leaks=0
+      # InfluxDB connection for the metrics forwarder
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN:-agentran-dev-token}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-mwc}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-mwc-live}
+    depends_on:
+      oai-ext-dn:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.140
+    volumes:
+      - ./oai-ran/gnb.yaml:/opt/oai-gnb/etc/gnb.yaml
+    healthcheck:
+      test: /bin/bash -c "pgrep nr-softmodem"
+      start_period: 10s
+      start_interval: 500ms
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oai-nr-ue:
+    container_name: agentran-oai-nr-ue
+    build:
+      context: ..
+      dockerfile: deploy/oai-ran/Dockerfile.nrue
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    environment:
+      USE_ADDITIONAL_OPTIONS: >-
+        -E --rfsim -r 106 --numerology 1
+        --uicc0.imsi 208990100001100
+        -C 3319680000
+        --rfsimulator.[0].serveraddr 10.71.0.140
+        --log_config.global_log_options level,nocolor,time
+    depends_on:
+      oai-gnb:
+        condition: service_healthy
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.150
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./oai-ran/nrue.yaml:/opt/oai-nr-ue/etc/nr-ue.yaml
+    healthcheck:
+      test: /bin/bash -c "pgrep nr-uesoftmodem"
+      start_period: 10s
+      start_interval: 500ms
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── DL Traffic Generator ────────────────────────────────────────────
+  # Uses iperf3 reverse mode (-R): the client runs in the UE's network
+  # namespace and binds to the UE tunnel IP, but with -R the ext-dn
+  # iperf3 server sends the data → traffic flows downlink through the gNB.
+
+  dl-traffic:
+    container_name: agentran-dl-traffic
+    build:
+      context: .
+      dockerfile: Dockerfile.traffic
+    network_mode: "service:oai-nr-ue"
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      oai-nr-ue:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        echo "[dl-traffic] Waiting for UE tunnel interface..."
+        while ! ip link show oaitun_ue1 2>/dev/null; do sleep 2; done
+        UE_IP=$$(ip -4 addr show oaitun_ue1 | grep -oP 'inet \K[\d.]+')
+        echo "[dl-traffic] UE tunnel IP: $$UE_IP"
+        # Policy routing so return traffic uses the tunnel
+        ip rule add from $$UE_IP table 201 || true
+        ip route add default dev oaitun_ue1 table 201 || true
+        echo "[dl-traffic] Waiting for ext-dn iperf3 server..."
+        sleep 5
+        echo "[dl-traffic] Starting DL iperf3 (reverse mode): ext-dn -> UE (10 Mbps UDP)"
+        exec iperf3 -c 10.71.0.135 -B $$UE_IP -u -b 10M -t 0 -R --forceflush
+    restart: unless-stopped
+
+  # ─── InfluxDB ──────────────────────────────────────────────────────
+
+  influxdb:
+    container_name: agentran-influxdb
+    image: influxdb:2.7
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USERNAME:-admin}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-changeme-please}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-mwc}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-mwc-live}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-agentran-dev-token}
+    ports:
+      - "${INFLUXDB_PORT:-8086}:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.170
+
+  # ─── Ollama LLM Inference ────────────────────────────────────────────
+  # OpenAI-compatible API at /v1/chat/completions on port 11434.
+  # Model is pulled on first start by the ollama-init sidecar and cached
+  # in ./models/ollama on the host.
+
+  ollama:
+    container_name: agentran-ollama
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./models/ollama:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      start_period: 30s
+      start_interval: 2s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.171
+
+  ollama-init:
+    container_name: agentran-ollama-init
+    image: ollama/ollama
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        MODEL=$${OLLAMA_MODEL:-gpt-oss:20b}
+        echo "[init] Pulling $$MODEL..."
+        ollama pull $$MODEL
+        echo "[init] Warming up model (loading into GPU)..."
+        ollama run $$MODEL "hello" --verbose
+        echo "[init] Model ready and loaded in GPU memory"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gpt-oss:20b}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.175
+
+  # ─── AI-RAN Agents (one container per agent) ────────────────────────
+
+  l2-manager:
+    container_name: agentran-l2-manager
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-agentran-dev-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-mwc}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-mwc-live}
+      - VLLM_URL=http://ollama:11434
+      - VLLM_MODEL=${OLLAMA_MODEL:-gpt-oss:20b}
+      - LLM_TYPE=vllm
+      - INTENT=${DEFAULT_INTENT:-Alternate the throughput limit for all UE classes between 1 Mbps and 3 Mbps every decision cycle. When the current limit is 1 set it to 3. When it is 3 set it to 1.}
+      - SHARED_STATE_DIR=/app/shared-state
+      - PYTHONUNBUFFERED=1
+    command: python3 run_l2.py
+    volumes:
+      - agent-shared-state:/app/shared-state
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /app/shared-state/subintents.json"]
+      start_period: 60s
+      start_interval: 2s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.172
+
+  scheduler-agent:
+    container_name: agentran-scheduler
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-agentran-dev-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-mwc}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-mwc-live}
+      - GNB_API_URL=http://10.71.0.140:8000
+      - VLLM_URL=http://ollama:11434
+      - VLLM_MODEL=${OLLAMA_MODEL:-gpt-oss:20b}
+      - LLM_TYPE=vllm
+      - SHARED_STATE_DIR=/app/shared-state
+      - SCHED_MIN_LIMIT=1
+      - SCHED_MAX_LIMIT=20
+      - SCHED_DEFAULT_FWA_LIMIT=3
+      - SCHED_DEFAULT_MTC_LIMIT=3
+      - SCHED_DECISION_INTERVAL=1.0
+      - PYTHONUNBUFFERED=1
+    command: python3 run_scheduler.py
+    volumes:
+      - agent-shared-state:/app/shared-state
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      oai-gnb:
+        condition: service_healthy
+      l2-manager:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.173
+
+networks:
+  agentran:
+    driver: bridge
+    name: agentran
+    ipam:
+      config:
+        - subnet: 10.71.0.0/24
+    driver_opts:
+      com.docker.network.bridge.name: "agentran"
+
+volumes:
+  influxdb-data:
+  influxdb-config:
+  agent-shared-state:
