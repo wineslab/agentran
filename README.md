@@ -4,7 +4,7 @@ A hierarchical multi-agent system for autonomous 5G RAN control. LLM-powered age
 
 ### Examples
 
-This framework was used in the AI-RAN Alliance Agentic Task Group demonstration at Mobile World Congress 2026. [Link to YouTube vide](https://www.youtube.com/watch?v=o7tDCipCJqg).
+This framework was used in the AI-RAN Alliance Agentic Task Group demonstration at Mobile World Congress 2026. [Link to YouTube video](https://www.youtube.com/watch?v=o7tDCipCJqg).
 
 If you use the framework, please cite the [AgentRAN paper](https://arxiv.org/pdf/2508.17778)
 
