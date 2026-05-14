@@ -31,7 +31,9 @@ def _append_to_json(filepath: str, entry: dict, max_entries: int = 200):
 
 def _escape_influx(value: str) -> str:
     """Escape a string value for InfluxDB line protocol."""
-    return value.replace('"', '\\"')
+    # Newlines break line protocol (record separator); collapse to space first
+    value = value.replace('\r\n', ' ').replace('\n', ' ').replace('\r', ' ')
+    return value.replace('\\', '\\\\').replace('"', '\\"')
 
 
 async def log_decision(influx, agent_type: str, fields: dict, tags: dict = None):

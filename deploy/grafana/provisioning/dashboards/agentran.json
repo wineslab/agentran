@@ -1,0 +1,205 @@
+{
+  "title": "AgentRAN — 5G AI Scheduler",
+  "uid": "agentran-main",
+  "description": "Real-time monitoring of AI-driven 5G RAN scheduler decisions and UE throughput",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"]
+  },
+  "graphTooltip": 1,
+  "templating": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "L2 High-Level Intent",
+      "description": "Original high-level intent passed to the L2 manager agent",
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+          "query": "from(bucket: v.defaultBucket)\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"agent_intents\" and r.agent_type == \"scheduler\" and r._field == \"high_level_intent\")\n  |> last()"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["last"],
+          "fields": "/high_level_intent/",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 16 }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "#5794F2" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "#5794F2", "value": null }]
+          },
+          "noValue": "Waiting for L2 intent…",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Scheduler Agent Intent",
+      "description": "Sub-intent assigned to the scheduler agent by the L2 manager",
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+          "query": "from(bucket: v.defaultBucket)\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"agent_intents\" and r.agent_type == \"scheduler\" and r._field == \"intent\")\n  |> last()"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["last"],
+          "fields": "/^intent/",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 16 }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "#B877D9" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "#B877D9", "value": null }]
+          },
+          "noValue": "Waiting for scheduler intent…",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "UE Throughput (Mbps)",
+      "description": "Actual downlink throughput per UE, computed from gNB slot-level scheduler metrics",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+          "query": "from(bucket: v.defaultBucket)\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"dl_scheduler\" and r._field == \"throughput\")\n  |> map(fn: (r) => ({r with _value: float(v: r._value) / 1000000.0}))\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "pointSize": 5,
+            "showPoints": "auto",
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "xAxis": {}
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Scheduler Agent Actions — Limits (Mbps)",
+      "description": "eMBB (FWA) and MTC throughput limits applied by the scheduler agent each decision cycle",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+          "query": "from(bucket: v.defaultBucket)\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"agent_decisions\" and r.agent_type == \"scheduler\" and r._field == \"fwa_limit\")\n  |> map(fn: (r) => ({r with _field: \"eMBB Limit\", _value: float(v: r._value)}))"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "influxdb", "uid": "agentran-influxdb" },
+          "query": "from(bucket: v.defaultBucket)\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"agent_decisions\" and r.agent_type == \"scheduler\" and r._field == \"mtc_limit\")\n  |> map(fn: (r) => ({r with _field: \"MTC Limit\", _value: float(v: r._value)}))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "spanNulls": true,
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "pointSize": 7,
+            "showPoints": "always",
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "eMBB Limit" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "#1F60C4", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "MTC Limit" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "#FF9830", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "xAxis": {}
+      }
+    }
+  ]
+}

@@ -378,6 +378,32 @@ services:
       agentran:
         ipv4_address: 10.71.0.173
 
+  # ─── Grafana ──────────────────────────────────────────────────────
+
+  grafana:
+    container_name: agentran-grafana
+    image: grafana/grafana:10.4.2
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-agentran}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-agentran-dev-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-mwc}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-mwc-live}
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      agentran:
+        ipv4_address: 10.71.0.180
+
 networks:
   agentran:
     driver: bridge
@@ -392,3 +418,4 @@ volumes:
   influxdb-data:
   influxdb-config:
   agent-shared-state:
+  grafana-data:
