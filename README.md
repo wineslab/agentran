@@ -2,6 +2,24 @@
 
 A hierarchical multi-agent system for autonomous 5G RAN control. LLM-powered agents read real-time network KPMs from InfluxDB and issue control actions to a 5G gNBs. The framework is extensible and multiple agents can be composed on top of this infrastructure ([docs/CREATING_AGENTS.md](docs/CREATING_AGENTS.md)).
 
+### Examples
+
+This framework was used in the AI-RAN Alliance Agentic Task Group demonstration at Mobile World Congress 2026. [Link to YouTube vide](https://www.youtube.com/watch?v=o7tDCipCJqg).
+
+If you use the framework, please cite the [AgentRAN paper](https://arxiv.org/pdf/2508.17778)
+
+```text
+@ARTICLE{elkael2026agentran,
+  author={Elkael, Maxime and D'Oro, Salvatore and Bonati, Leonardo and Polese, Michele and Lee, Yunseong and Furueda, Koichiro and Melodia, Tommaso},
+  journal={IEEE Communications Magazine}, 
+  title={AgentRAN: An Agentic AI Architecture for Autonomous Control of Open 6G Networks}, 
+  year={2026},
+  volume={},
+  number={},
+  pages={1-7},
+  doi={10.1109/MCOM.001.2500563}}
+```
+
 The current implementation is designed to work with the companion RAN stack fork:
 [wineslab/oai-release-agentRAN](https://github.com/wineslab/oai-release-agentRAN) (branch `dl-lua-scheduler`), included here as the `oai/` submodule. Note that this is temporary - changes in the scheduler that are required to exercise the agents are being upstreamed to OAI.
 
@@ -221,3 +239,5 @@ See [`deploy/k8s/oai/README.md`](deploy/k8s/oai/README.md) for the manual step-b
 ### Legacy
 
 The top-level `Dockerfile` and `deployment.yaml` predate the bundled stack and are kept for backward compatibility with the single-image, agents-only deployment path; new work targets the `deploy/` tree.
+
+Part of this work originated from the NTIA Public Wireless Supply Chain Innovation Fund award 25-60-IF054 (AutoRAN).
